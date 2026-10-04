@@ -44,6 +44,9 @@ type Attachment = {
   rotation: number;
 };
 
+const MAX_COMBO = 10;
+const MAX_ATTACHMENTS = 7;
+
 type Feedback = {
   id: number;
   x: number;
@@ -87,6 +90,7 @@ function App() {
   const [status, setStatus] = useState<GameStatus>('menu');
   const [score, setScore] = useState(0);
   const [combo, setCombo] = useState(0);
+  const [lastCategory, setLastCategory] = useState<Category | null>(null);
   const [lives, setLives] = useState(3);
   const [elapsed, setElapsed] = useState(0);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -107,6 +111,8 @@ function App() {
   const level = Math.min(5, 1 + Math.floor(elapsed / 25));
   const speedPercent = Math.min(100, 12 + elapsed * 1.05);
   const highScore = Number(localStorage.getItem('apwide-high-score') || 0);
+
+  const comboLabel = (c: number) => c >= MAX_COMBO ? 'MAX' : c > 1 ? `x${c}` : '—';
 
   const playTone = useCallback((frequency: number, duration = 0.08, type: OscillatorType = 'sine') => {
     if (!soundOn) return;
@@ -133,28 +139,32 @@ function App() {
   }, []);
 
   const spawnAttachment = useCallback(() => {
-    const template = attachmentSeed[Math.floor(Math.random() * attachmentSeed.length)];
-    const id = idRef.current++;
-    const t = elapsedRef.current;
-    const playWidth = boardRef.current?.clientWidth ?? 1000;
-    const maxLeft = window.innerWidth <= 900 ? 45 : Math.max(16, ((playWidth - 312 - 238) / playWidth) * 100);
-    setAttachments((current) => [
-      ...current,
-      {
-        ...template,
-        id,
-        x: 5 + Math.random() * Math.max(10, maxLeft - 5),
-        y: -13,
-        speed: 0.045 + t * 0.00025 + Math.random() * 0.01,
-        rotation: -7 + Math.random() * 14,
-      },
-    ]);
+    setAttachments((current) => {
+      if (current.length >= MAX_ATTACHMENTS) return current;
+      const template = attachmentSeed[Math.floor(Math.random() * attachmentSeed.length)];
+      const id = idRef.current++;
+      const t = elapsedRef.current;
+      const playWidth = boardRef.current?.clientWidth ?? 1000;
+      const maxLeft = window.innerWidth <= 900 ? 45 : Math.max(16, ((playWidth - 312 - 238) / playWidth) * 100);
+      return [
+        ...current,
+        {
+          ...template,
+          id,
+          x: 5 + Math.random() * Math.max(10, maxLeft - 5),
+          y: -13,
+          speed: 0.12 + t * 0.0006 + Math.random() * 0.02,
+          rotation: -7 + Math.random() * 14,
+        },
+      ];
+    });
   }, []);
 
   const startGame = useCallback(() => {
     setStatus('playing');
     setScore(0);
     setCombo(0);
+    setLastCategory(null);
     setLives(3);
     setElapsed(0);
     elapsedRef.current = 0;
@@ -187,10 +197,9 @@ function App() {
     let timeoutId = window.setTimeout(function tick() {
       spawnAttachment();
       const t = elapsedRef.current;
-      const ramp = Math.max(0, t - 15);
-      const delay = Math.max(500, 3200 - ramp * 45);
+      const delay = Math.max(700, 2200 - t * 18);
       timeoutId = window.setTimeout(tick, delay);
-    }, 3200);
+    }, 2200);
     return () => window.clearTimeout(timeoutId);
   }, [status, countdown, spawnAttachment]);
 
@@ -215,9 +224,12 @@ function App() {
   useEffect(() => {
     if (status !== 'playing' || countdown !== null) return;
     let frame = 0;
-    const animate = () => {
+    let lastTime = performance.now();
+    const animate = (now: number) => {
+      const delta = Math.min(50, now - lastTime) / 16.67;
+      lastTime = now;
       setAttachments((current) => {
-        const moved = current.map((item) => item.id === draggingId ? item : { ...item, y: item.y + item.speed });
+        const moved = current.map((item) => item.id === draggingId ? item : { ...item, y: item.y + item.speed * delta });
         const missed = moved.filter((item) => item.y > 94);
         if (missed.length > 0) {
           setLives((value) => {
@@ -226,6 +238,7 @@ function App() {
             return Math.max(0, next);
           });
           setCombo(0);
+          setLastCategory(null);
           missed.forEach((item) => addFeedback('MISSED', 'bad', item.x, 76));
           playTone(180, 0.12, 'square');
         }
@@ -244,16 +257,19 @@ function App() {
     const isCorrect = target.category === category;
     const fx = target.x;
     const fy = Math.min(target.y, 72);
+    const droppedCategory = target.category;
     setAttachments((current) => current.filter((item) => item.id !== draggingId));
     setDraggingId(null);
     setHoveredCategory(null);
     if (isCorrect) {
-      const nextCombo = combo + 1;
-      const points = 100 * Math.min(4, 1 + Math.floor(nextCombo / 3));
+      const isVariety = lastCategory !== null && lastCategory !== droppedCategory;
+      const nextCombo = isVariety ? Math.min(MAX_COMBO, combo + 1) : combo === 0 ? 1 : combo;
+      const points = 100 * Math.min(MAX_COMBO, nextCombo);
       setScore((value) => value + points);
       setCombo(nextCombo);
-      addFeedback(nextCombo > 1 ? `+${points}  COMBO x${Math.min(4, 1 + Math.floor(nextCombo / 3))}` : `+${points}`, nextCombo > 1 ? 'combo' : 'good', fx, fy);
-      playTone(640 + Math.min(nextCombo, 6) * 45, 0.1, 'sine');
+      setLastCategory(droppedCategory);
+      addFeedback(nextCombo > 1 ? `+${points}  COMBO ${nextCombo >= MAX_COMBO ? 'MAX' : 'x' + nextCombo}` : `+${points}`, nextCombo > 1 ? 'combo' : 'good', fx, fy);
+      playTone(640 + Math.min(nextCombo, 8) * 40, 0.1, 'sine');
     } else {
       setLives((value) => {
         const next = value - 1;
@@ -261,6 +277,7 @@ function App() {
         return Math.max(0, next);
       });
       setCombo(0);
+      setLastCategory(null);
       addFeedback('WRONG FIELD', 'bad', fx, fy);
       playTone(160, 0.18, 'square');
     }
@@ -362,7 +379,7 @@ function App() {
             <div className="stats-row">
               <div className="stat-block"><span>SCORE</span><strong>{score.toLocaleString().padStart(4, '0')}</strong></div>
               <div className="stat-block timer-stat"><span>TIME</span><strong>{formatDuration(elapsed)}</strong></div>
-              <div className="stat-block combo-stat"><span>COMBO</span><strong>{combo > 1 ? `x${Math.min(4, 1 + Math.floor(combo / 3))}` : '—'}</strong></div>
+              <div className="stat-block combo-stat"><span>COMBO</span><strong>{comboLabel(combo)}</strong></div>
               <div className="lives-block" aria-label={`${lives} lives remaining`}><span>LIVES</span><div className="life-dots">{[0, 1, 2].map((life) => <i key={life} className={life < lives ? 'alive' : ''} />)}</div></div>
             </div>
           </div>
@@ -384,7 +401,7 @@ function App() {
         </section>
       )}
 
-      {status === 'over' && <div className="modal-backdrop"><div className="game-over-card"><div className="over-icon"><TriangleAlert size={25} /></div><div className="eyebrow">ISSUE STATUS: BLOCKED</div><h2>Buried in attachments.</h2><p>The backlog won this round, but the issue is still recoverable.</p><div className="final-stats"><div><span>FINAL SCORE</span><strong>{score.toLocaleString().padStart(4, '0')}</strong></div><div><span>TIME SURVIVED</span><strong>{formatDuration(elapsed)}</strong></div><div><span>BEST COMBO</span><strong>{combo > 0 ? `x${Math.min(4, 1 + Math.floor(combo / 3))}` : '—'}</strong></div></div>{earnedReward && <p className="reward-message">Congratulations! The Beaver is proud of you! Write an email to partners@apwide.com and screenshot your score, and you'll receive a secret reward!</p>}<button className="primary-button full-button" onClick={startGame}><RotateCcw size={17} /> Try again</button><button className="text-button" onClick={() => setStatus('menu')}>Back to briefing</button></div></div>}
+      {status === 'over' && <div className="modal-backdrop"><div className="game-over-card"><div className="over-icon"><TriangleAlert size={25} /></div><div className="eyebrow">ISSUE STATUS: BLOCKED</div><h2>Buried in attachments.</h2><p>The backlog won this round, but the issue is still recoverable.</p><div className="final-stats"><div><span>FINAL SCORE</span><strong>{score.toLocaleString().padStart(4, '0')}</strong></div><div><span>TIME SURVIVED</span><strong>{formatDuration(elapsed)}</strong></div><div><span>BEST COMBO</span><strong>{comboLabel(combo)}</strong></div></div>{earnedReward && <div className="reward-banner"><div className="reward-icon"><Sparkles size={28} /></div><div className="reward-text"><strong>Congratulations! The Beaver is proud of you!</strong><span>Write an email to partners@apwide.com and screenshot your score, and you'll receive a secret reward!</span></div></div>}<button className="primary-button full-button" onClick={startGame}><RotateCcw size={17} /> Try again</button><button className="text-button" onClick={() => setStatus('menu')}>Back to briefing</button></div></div>}
       {showHelp && <div className="modal-backdrop help-backdrop" onPointerDown={(event) => { if (event.currentTarget === event.target) setShowHelp(false); }}><div className="help-card"><button className="close-button" onClick={() => setShowHelp(false)}><X size={17} /></button><div className="eyebrow"><MousePointer2 size={14} /> FIELD MANUAL</div><h2>Keep the issue tidy.</h2><div className="help-steps"><div><b>01</b><span>Grab a falling attachment by its card.</span></div><div><b>02</b><span>Drop it into the matching File Field.</span></div><div><b>03</b><span>Build combos for bigger points. Miss three and the issue is blocked.</span></div></div><button className="primary-button full-button" onClick={() => { setShowHelp(false); if (status === 'menu') startGame(); }}>Got it, start sorting <ArrowRight size={16} /></button></div></div>}
       {showOptions && <div className="modal-backdrop" onPointerDown={(event) => { if (event.currentTarget === event.target) setShowOptions(false); }}><div className="options-card"><button className="close-button" onClick={() => setShowOptions(false)}><X size={17} /></button><div className="eyebrow"><Settings size={14} /> PLAYER OPTIONS</div><h2>Important questions.</h2><div className="option-group"><strong>Do you like beavers?</strong><div className="option-buttons"><button className={beaverAnswer === 'No, I LOVE BEAVERS' ? 'option-button selected' : 'option-button'} onClick={() => setBeaverAnswer('No, I LOVE BEAVERS')}>No, I LOVE BEAVERS</button><button className={beaverAnswer === 'Yes' ? 'option-button selected' : 'option-button'} onClick={() => setBeaverAnswer('Yes')}>Yes</button></div></div><div className="option-group"><strong>According to you, which Marketplace Partner produces the best Jira apps?</strong><div className="option-buttons"><button className={marketplaceAnswer === 'Apwide' ? 'option-button selected' : 'option-button'} onClick={() => setMarketplaceAnswer('Apwide')}>Apwide</button></div></div></div></div>}
     </main>
